@@ -15,7 +15,7 @@
         .input-field {
             /* Ensured explicit colors for dark mode visibility */
             @apply w-full p-3 bg-gray-700 text-white border border-gray-600 rounded-lg focus:ring-blue-500 focus:border-blue-500 transition duration-150 ease-in-out;
-            /* FORCED FIX: Overriding browser defaults */
+            /* FORCED FIX: Overriding browser defaults for dark background/white text */
             background-color: #4A5568 !important; /* Tailwind gray-700 */
             color: #FFFFFF !important;
         }
@@ -144,10 +144,41 @@
         // Set Firebase Log Level for debugging
         setLogLevel('debug');
 
-        // --- GLOBAL SETUP VARIABLES ---
-        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
-        const firebaseConfig = JSON.parse(typeof __firebase_config !== 'undefined' ? __firebase_config : '{}');
-        const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+        // --- GLOBAL SETUP VARIABLES (Handles Canvas environment and Netlify environment) ---
+        // 1. Check for Canvas variables first
+        const isCanvas = typeof __firebase_config !== 'undefined';
+        const canvasAppId = isCanvas ? __app_id : 'default-app-id';
+        const canvasFirebaseConfig = isCanvas ? JSON.parse(__firebase_config) : {};
+        const initialAuthToken = isCanvas ? __initial_auth_token : null;
+
+        // 2. Fallback to Netlify/Vercel Environment Variables (process.env is not available in static HTML, must read from global window scope if injected via script)
+        // Since we are in a single HTML file and cannot use bundlers, we use a simple injection method for Netlify variables.
+        // NOTE: For Netlify, the user must follow the `netlify_config_guide.md` and manually inject these as environment variables.
+        const netlifyConfig = {
+            apiKey: window.VITE_FIREBASE_API_KEY,
+            authDomain: window.VITE_FIREBASE_AUTH_DOMAIN,
+            projectId: window.VITE_FIREBASE_PROJECT_ID,
+            appId: window.VITE_FIREBASE_APP_ID,
+        };
+        const netlifyAppId = window.VITE_APP_ID_FOR_FIRESTORE;
+
+        // 3. Determine Final Config Source
+        let finalFirebaseConfig = {};
+        let appId = canvasAppId;
+
+        if (isCanvas && Object.keys(canvasFirebaseConfig).length > 0) {
+            // Use Canvas config
+            finalFirebaseConfig = canvasFirebaseConfig;
+            appId = canvasAppId;
+        } else if (netlifyConfig.apiKey) {
+            // Use Netlify config (assuming VITE_FIREBASE_API_KEY is defined)
+            finalFirebaseConfig = netlifyConfig;
+            appId = netlifyAppId || netlifyConfig.projectId; // Use VITE_APP_ID_FOR_FIRESTORE if available, otherwise Project ID
+        } else {
+            // Neither environment provided valid config
+            console.warn("No valid Firebase configuration found in environment variables.");
+        }
+
 
         let app, db, auth;
         let userId = null;
@@ -179,12 +210,12 @@
             try {
                 document.getElementById('app-id-display').textContent = appId;
                 
-                // CRUCIAL: Check if firebaseConfig is actually valid before initializing
-                if (!firebaseConfig || Object.keys(firebaseConfig).length === 0 || !firebaseConfig.apiKey) {
-                    throw new Error("Firebase configuration object is missing or invalid.");
+                // CRUCIAL: Check if finalFirebaseConfig is actually valid before initializing
+                if (!finalFirebaseConfig || Object.keys(finalFirebaseConfig).length === 0 || !finalFirebaseConfig.apiKey) {
+                    throw new Error("Firebase configuration object is missing or invalid. Deployment environment keys (VITE_...) must be set.");
                 }
 
-                app = initializeApp(firebaseConfig);
+                app = initializeApp(finalFirebaseConfig);
                 db = getFirestore(app);
                 auth = getAuth(app);
                 
@@ -269,46 +300,6 @@
         // --- DEBT PAYOFF LOGIC (CORE ENGINE) ---
 
         /**
-         * Simulates the amortization of a single debt until payoff.
-         * NOTE: This function is currently not used by the main strategy logic (calculateStrategyPayoff)
-         * but is kept for potential future use or single-debt calculation display.
-         * @param {number} balance - Current outstanding balance.
-         * @param {number} interestRate - Annual interest rate (e.g., 0.18 for 18%).
-         * @param {number} payment - Fixed monthly payment.
-         * @returns {{months: number, totalInterest: number, lastPaymentDate: Date}}
-         */
-        const calculatePayoff = (balance, interestRate, payment, startDate) => {
-            let currentBalance = balance;
-            let totalInterest = 0;
-            let months = 0;
-            let currentDate = new Date(startDate);
-            const monthlyRate = interestRate / 12;
-
-            while (currentBalance > 0 && months < 1200) { // Limit to 100 years to prevent infinite loops
-                months++;
-                currentDate.setMonth(currentDate.getMonth() + 1);
-
-                // Calculate interest for the month
-                const interestPayment = currentBalance * monthlyRate;
-                totalInterest += interestPayment;
-
-                // Calculate principal payment
-                let principalPayment = payment - interestPayment;
-
-                // If the payment is greater than the remaining balance (plus interest)
-                if (currentBalance + interestPayment <= payment) {
-                    principalPayment = currentBalance;
-                    currentBalance = 0;
-                } else {
-                    currentBalance -= principalPayment;
-                }
-            }
-
-            return { months, totalInterest, lastPaymentDate: currentBalance === 0 ? currentDate : null };
-        };
-
-
-        /**
          * Calculates payoff for multiple debts using Snowball or Avalanche method.
          * @param {string} method - 'snowball' or 'avalanche'.
          * @param {number} extraPayment - Extra money allocated to be added to the target debt.
@@ -373,10 +364,6 @@
                         debt.currentBalance = 0;
                         
                         // If paid off, add the debt's minimum payment to the growing extra payment (the "snowball" grows)
-                        if (i === targetDebtIndex) {
-                             // Only add minimum payments to the snowball *after* the debt is cleared.
-                             // The total payment already included the extra payment, which is cleared from the snowball in the next step.
-                        }
                         currentExtraPayment += debt.minPayment;
                         
                     } else {
@@ -431,7 +418,9 @@
             listContainer.querySelectorAll('.delete-btn').forEach(button => {
                 button.addEventListener('click', (e) => {
                     const id = e.currentTarget.dataset.id;
-                    deleteDebt(id);
+                    deleteDoc(doc(getCollectionRef(), id)).catch(error => {
+                        console.error("Error deleting document: ", error);
+                    });
                 });
             });
         };
@@ -498,9 +487,14 @@
                 return;
             }
 
-            await addDoc(getCollectionRef(), newDebt);
-            e.target.reset(); // Clear form after submission
-            document.getElementById('extraPayment').value = 0; // Resetting value
+            try {
+                await addDoc(getCollectionRef(), newDebt);
+                e.target.reset(); // Clear form after successful submission
+                document.getElementById('extraPayment').value = 0; // Resetting value
+            } catch (error) {
+                console.error("Error adding debt:", error);
+                authStatusElement.textContent = 'Failed to save debt. Check console.';
+            }
         });
 
         document.getElementById('snowball-btn').addEventListener('click', () => {
