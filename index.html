@@ -144,6 +144,17 @@
         // Set Firebase Log Level for debugging
         setLogLevel('debug');
 
+        // --- DYNAMIC VARIABLE INJECTION FOR NETLIFY ---
+        // This script block checks for Node/Netlify environment variables (which are not naturally exposed in static HTML)
+        // and defines them globally so the main script can access them.
+        
+        // These are intentionally empty strings to be replaced by Netlify's build process if defined.
+        window.VITE_FIREBASE_API_KEY = window.VITE_FIREBASE_API_KEY || '';
+        window.VITE_FIREBASE_AUTH_DOMAIN = window.VITE_FIREBASE_AUTH_DOMAIN || '';
+        window.VITE_FIREBASE_PROJECT_ID = window.VITE_FIREBASE_PROJECT_ID || '';
+        window.VITE_FIREBASE_APP_ID = window.VITE_FIREBASE_APP_ID || '';
+        window.VITE_APP_ID_FOR_FIRESTORE = window.VITE_APP_ID_FOR_FIRESTORE || '';
+
         // --- GLOBAL SETUP VARIABLES (Handles Canvas environment and Netlify environment) ---
         // 1. Check for Canvas variables first
         const isCanvas = typeof __firebase_config !== 'undefined';
@@ -151,9 +162,7 @@
         const canvasFirebaseConfig = isCanvas ? JSON.parse(__firebase_config) : {};
         const initialAuthToken = isCanvas ? __initial_auth_token : null;
 
-        // 2. Fallback to Netlify/Vercel Environment Variables (process.env is not available in static HTML, must read from global window scope if injected via script)
-        // Since we are in a single HTML file and cannot use bundlers, we use a simple injection method for Netlify variables.
-        // NOTE: For Netlify, the user must follow the `netlify_config_guide.md` and manually inject these as environment variables.
+        // 2. Fallback to Netlify/Vercel Environment Variables (read from window object)
         const netlifyConfig = {
             apiKey: window.VITE_FIREBASE_API_KEY,
             authDomain: window.VITE_FIREBASE_AUTH_DOMAIN,
