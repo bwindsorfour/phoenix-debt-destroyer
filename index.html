@@ -71,8 +71,8 @@
                         <label for="extraPayment" class="block text-sm font-medium text-gray-300 mb-1">Extra Monthly Payment to Apply ($)</label>
                         <input type="number" id="extraPayment" value="0" class="input-field" step="0.01" min="0" required>
                     </div>
-                    <!-- Added 'disabled' attribute here to prevent submission before auth is ready -->
-                    <button type="submit" id="submit-debt-btn" class="w-full py-3 bg-blue-600 hover:bg-blue-700 text-white font-bold text-lg rounded-xl transition duration-150 ease-in-out shadow-lg shadow-blue-500/50" disabled>
+                    <!-- Submit button is now always enabled -->
+                    <button type="submit" id="submit-debt-btn" class="w-full py-3 bg-blue-600 hover:bg-blue-700 text-white font-bold text-lg rounded-xl transition duration-150 ease-in-out shadow-lg shadow-blue-500/50">
                         Add Debt
                     </button>
                 </form>
@@ -81,8 +81,8 @@
             <!-- COLUMN 2: Debt List & Control -->
             <div class="lg:col-span-2 space-y-8">
                 <div class="bg-gray-800 p-6 rounded-2xl shadow-2xl">
-                    <h2 class="text-2xl font-bold mb-4 text-blue-300">Your Debts (Real-Time Storage)</h2>
-                    <p id="auth-status" class="text-sm text-yellow-500 mb-4">Initializing Firebase...</p>
+                    <h2 class="text-2xl font-bold mb-4 text-blue-300">Your Debts (Browser Storage)</h2>
+                    <p id="auth-status" class="text-sm text-green-500 mb-4">Ready to use! Data saved locally in this browser.</p>
                     <div id="debt-list" class="debt-list-container max-h-80 overflow-y-auto space-y-3">
                         <!-- Debts will be rendered here -->
                         <p id="no-debts" class="text-gray-400">No debts added yet. Use the form to the left!</p>
@@ -129,187 +129,49 @@
         
         <!-- Debugging/User Info Section -->
         <footer class="mt-10 text-center text-xs text-gray-500">
-            <p>App ID: <span id="app-id-display"></span> | User ID: <span id="user-id-display"></span></p>
-            <p class="mt-2">Data is stored securely in your private Firestore collection.</p>
+            <p>Data is stored locally in your browser. It will **not** sync between devices.</p>
         </footer>
     </div>
 
-    <!-- Firebase SDK Imports (MUST BE BEFORE script tag) -->
     <script type="module">
-        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
-        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-        import { getFirestore, collection, query, orderBy, onSnapshot, addDoc, updateDoc, deleteDoc, doc, setDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
-        import { setLogLevel } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
         
-        // Set Firebase Log Level for debugging
-        setLogLevel('debug');
-
-        // --- DYNAMIC VARIABLE INJECTION FOR NETLIFY ---
-        // This script block checks for Node/Netlify environment variables (which are not naturally exposed in static HTML)
-        // and defines them globally so the main script can access them.
-        
-        // These are intentionally empty strings to be replaced by Netlify's build process if defined.
-        window.VITE_FIREBASE_API_KEY = window.VITE_FIREBASE_API_KEY || '';
-        window.VITE_FIREBASE_AUTH_DOMAIN = window.VITE_FIREBASE_AUTH_DOMAIN || '';
-        window.VITE_FIREBASE_PROJECT_ID = window.VITE_FIREBASE_PROJECT_ID || '';
-        window.VITE_FIREBASE_APP_ID = window.VITE_FIREBASE_APP_ID || '';
-        window.VITE_APP_ID_FOR_FIRESTORE = window.VITE_APP_ID_FOR_FIRESTORE || '';
-
-        // --- GLOBAL SETUP VARIABLES (Handles Canvas environment and Netlify environment) ---
-        // 1. Check for Canvas variables first
-        const isCanvas = typeof __firebase_config !== 'undefined';
-        const canvasAppId = isCanvas ? __app_id : 'default-app-id';
-        const canvasFirebaseConfig = isCanvas ? JSON.parse(__firebase_config) : {};
-        const initialAuthToken = isCanvas ? __initial_auth_token : null;
-
-        // 2. Fallback to Netlify/Vercel Environment Variables (read from window object)
-        const netlifyConfig = {
-            apiKey: window.VITE_FIREBASE_API_KEY,
-            authDomain: window.VITE_FIREBASE_AUTH_DOMAIN,
-            projectId: window.VITE_FIREBASE_PROJECT_ID,
-            appId: window.VITE_FIREBASE_APP_ID,
-        };
-        const netlifyAppId = window.VITE_APP_ID_FOR_FIRESTORE;
-
-        // 3. Determine Final Config Source
-        let finalFirebaseConfig = {};
-        let appId = canvasAppId;
-
-        if (isCanvas && Object.keys(canvasFirebaseConfig).length > 0) {
-            // Use Canvas config
-            finalFirebaseConfig = canvasFirebaseConfig;
-            appId = canvasAppId;
-        } else if (netlifyConfig.apiKey) {
-            // Use Netlify config (assuming VITE_FIREBASE_API_KEY is defined)
-            finalFirebaseConfig = netlifyConfig;
-            appId = netlifyAppId || netlifyConfig.projectId; // Use VITE_APP_ID_FOR_FIRESTORE if available, otherwise Project ID
-        } else {
-            // Neither environment provided valid config
-            console.warn("No valid Firebase configuration found in environment variables.");
-        }
-
-
-        let app, db, auth;
-        let userId = null;
-        let isAuthReady = false;
+        // --- LOCAL DATA PERSISTENCE FUNCTIONS ---
+        const DEBT_STORAGE_KEY = 'phoenixDebtList';
         let debts = [];
-        
-        const submitButton = document.getElementById('submit-debt-btn');
-        const authStatusElement = document.getElementById('auth-status');
 
-        // Utility Function to format currency
+        const loadDebts = () => {
+            const storedData = localStorage.getItem(DEBT_STORAGE_KEY);
+            if (storedData) {
+                try {
+                    debts = JSON.parse(storedData);
+                } catch (e) {
+                    console.error("Error parsing stored debt data:", e);
+                    debts = [];
+                }
+            }
+            renderDebtList();
+            calculateAndDisplayResults();
+        };
+
+        const saveDebts = () => {
+            localStorage.setItem(DEBT_STORAGE_KEY, JSON.stringify(debts));
+        };
+        
+        // --- UTILITY FUNCTIONS ---
+
         const formatCurrency = (amount) => {
             return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', minimumFractionDigits: 2 }).format(amount);
         };
 
-        // Utility Function to format date as Month Year
         const formatDate = (date) => {
             return new Intl.DateTimeFormat('en-US', { year: 'numeric', month: 'long' }).format(date);
         };
-        
-        // Utility Function to convert date string to Date object
-        const parseDate = (dateString) => {
-            const [month, year] = dateString.split(' ');
-            const monthIndex = new Date(Date.parse(month + " 1, 2012")).getMonth();
-            return new Date(year, monthIndex);
-        }
 
-        // --- FIREBASE INITIALIZATION AND AUTHENTICATION ---
-        const initFirebase = async () => {
-            try {
-                document.getElementById('app-id-display').textContent = appId;
-                
-                // CRUCIAL: Check if finalFirebaseConfig is actually valid before initializing
-                if (!finalFirebaseConfig || Object.keys(finalFirebaseConfig).length === 0 || !finalFirebaseConfig.apiKey) {
-                    throw new Error("Firebase configuration object is missing or invalid. Deployment environment keys (VITE_...) must be set.");
-                }
-
-                app = initializeApp(finalFirebaseConfig);
-                db = getFirestore(app);
-                auth = getAuth(app);
-                
-                // Handle initial authentication status
-                onAuthStateChanged(auth, async (user) => {
-                    if (user) {
-                        userId = user.uid;
-                        document.getElementById('user-id-display').textContent = userId;
-                        // Enable the form and clear status once ready
-                        isAuthReady = true;
-                        submitButton.disabled = false;
-                        authStatusElement.textContent = `Authenticated. User ID: ${userId}`;
-                        authStatusElement.classList.replace('text-yellow-500', 'text-green-500');
-                        startDebtListener();
-                    } else {
-                        // Attempt sign in
-                        if (initialAuthToken) {
-                            await signInWithCustomToken(auth, initialAuthToken);
-                        } else {
-                            await signInAnonymously(auth);
-                        }
-                    }
-                });
-            } catch (error) {
-                console.error("Error initializing Firebase:", error);
-                // Display more descriptive error to the user
-                authStatusElement.textContent = `Error initializing Firebase. Check configuration/network.`;
-                authStatusElement.classList.replace('text-yellow-500', 'text-red-500');
-            }
-        };
-
-        // --- FIRESTORE DATA FUNCTIONS ---
-
-        const getCollectionRef = () => {
-            if (!userId) throw new Error("User not authenticated.");
-            // Private data path: /artifacts/{appId}/users/{userId}/{collectionName}
-            return collection(db, 'artifacts', appId, 'users', userId, 'debts');
-        };
-
-        const startDebtListener = () => {
-            if (!isAuthReady || !userId) return;
-
-            const debtsRef = getCollectionRef();
-            // Note: Not using orderBy() to avoid needing extra indexes, sorting will be done locally.
-            onSnapshot(debtsRef, (snapshot) => {
-                debts = [];
-                snapshot.forEach(doc => {
-                    const data = doc.data();
-                    debts.push({
-                        id: doc.id,
-                        name: data.name,
-                        balance: parseFloat(data.balance),
-                        interestRate: parseFloat(data.interestRate),
-                        minPayment: parseFloat(data.minPayment),
-                        extraPayment: parseFloat(data.extraPayment || 0),
-                    });
-                });
-                renderDebtList();
-                calculateAndDisplayResults(); // Recalculate anytime debt data changes
-            }, (error) => {
-                console.error("Error listening to debts:", error);
-                authStatusElement.textContent = `Error syncing data. See console.`;
-            });
-        };
-
-        const addDebt = async (debt) => {
-            try {
-                await addDoc(getCollectionRef(), debt);
-            } catch (error) {
-                console.error("Error adding document: ", error);
-            }
-        };
-
-        const deleteDebt = async (id) => {
-            try {
-                await deleteDoc(doc(getCollectionRef(), id));
-            } catch (error) {
-                console.error("Error deleting document: ", error);
-            }
-        };
-        
         // --- DEBT PAYOFF LOGIC (CORE ENGINE) ---
 
         /**
          * Calculates payoff for multiple debts using Snowball or Avalanche method.
+         * (Logic remains identical to the previous version, using local data structure)
          * @param {string} method - 'snowball' or 'avalanche'.
          * @param {number} extraPayment - Extra money allocated to be added to the target debt.
          * @returns {{payoffDate: string, totalInterest: number, method: string}}
@@ -389,6 +251,7 @@
             };
         };
 
+
         // --- UI RENDERING & EVENT HANDLERS ---
         
         const renderDebtList = () => {
@@ -403,16 +266,17 @@
 
             let totalDebtBalance = 0;
 
-            debts.forEach(debt => {
+            debts.forEach((debt, index) => {
                 totalDebtBalance += debt.balance;
                 const div = document.createElement('div');
                 div.className = 'bg-gray-700 p-3 rounded-lg flex justify-between items-center transition duration-150 ease-in-out hover:bg-gray-600';
+                // Using the array index as a simple ID for local storage manipulation
                 div.innerHTML = `
                     <div>
                         <p class="text-lg font-semibold text-white">${debt.name}</p>
                         <p class="text-sm text-gray-300">Balance: ${formatCurrency(debt.balance)} | Rate: ${debt.interestRate.toFixed(2)}% | Min Pay: ${formatCurrency(debt.minPayment)}</p>
                     </div>
-                    <button data-id="${debt.id}" class="delete-btn text-red-400 hover:text-red-500 font-bold ml-4 p-2 rounded-lg bg-gray-800 hover:bg-gray-700 transition">
+                    <button data-index="${index}" class="delete-btn text-red-400 hover:text-red-500 font-bold ml-4 p-2 rounded-lg bg-gray-800 hover:bg-gray-700 transition">
                         <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" class="w-5 h-5">
                             <path stroke-linecap="round" stroke-linejoin="round" d="M14.74 9l-.346 9m-4.788 0L9.26 9m1.23-7.5l-3.085 2.5a.5.5 0 00-.017.067L6 7l-2 11h16L18 7l-.017-.067A.5.5 0 0014.74 9z" />
                         </svg>
@@ -426,10 +290,13 @@
             // Add event listeners for delete buttons
             listContainer.querySelectorAll('.delete-btn').forEach(button => {
                 button.addEventListener('click', (e) => {
-                    const id = e.currentTarget.dataset.id;
-                    deleteDoc(doc(getCollectionRef(), id)).catch(error => {
-                        console.error("Error deleting document: ", error);
-                    });
+                    const index = parseInt(e.currentTarget.dataset.index);
+                    
+                    // Simple local delete logic
+                    debts.splice(index, 1); 
+                    saveDebts();
+                    renderDebtList();
+                    calculateAndDisplayResults();
                 });
             });
         };
@@ -440,30 +307,24 @@
             
             let strategy = { payoffDate: 'N/A', totalInterest: 0, method: 'None Selected' };
 
-            // Determine which button was last clicked, or if we have results to display
-            // Use the data-active-method attribute for persistence between data loads
             const activeMethod = method || document.getElementById('strategy-name').dataset.activeMethod;
             
             if (debts.length === 0) {
-                 // Nothing to calculate
-                 document.getElementById('strategy-name').dataset.activeMethod = ''; // Clear active method
+                 document.getElementById('strategy-name').dataset.activeMethod = '';
                  strategy.payoffDate = 'N/A';
                  strategy.totalInterest = 0;
                  strategy.method = 'None';
             } else if (activeMethod && activeMethod !== 'None') {
-                // Explicit Snowball or Avalanche click
                 strategy = calculateStrategyPayoff(activeMethod, extraPaymentValue);
                 document.getElementById('strategy-name').dataset.activeMethod = activeMethod;
             } else {
-                // Initial load or data change: show Minimum Payment Baseline
-                // We use 'avalanche' with 0 extra payment; the result is the same as minimum payments only.
+                // Initial load: Minimum Payment Baseline
                 const baseline = calculateStrategyPayoff('avalanche', 0); 
                 strategy.payoffDate = baseline.payoffDate; 
                 strategy.totalInterest = baseline.totalInterest;
                 strategy.method = 'Minimum Payment Only (Baseline)';
             }
 
-            // Update UI
             document.getElementById('strategy-name').textContent = strategy.method;
             document.getElementById('payoff-date').textContent = strategy.payoffDate;
             document.getElementById('total-interest').textContent = formatCurrency(strategy.totalInterest);
@@ -472,38 +333,30 @@
 
         // --- MAIN APPLICATION SETUP ---
 
-        document.getElementById('debt-form').addEventListener('submit', async (e) => {
+        document.getElementById('debt-form').addEventListener('submit', (e) => {
             e.preventDefault();
             
-            // Check auth status before proceeding
-            if (!isAuthReady) {
-                 // The button is disabled, but if a user somehow bypasses, this ensures safety.
-                 authStatusElement.textContent = 'Please wait, still signing in...';
-                 return;
-            }
-
             const newDebt = {
                 name: document.getElementById('name').value,
-                balance: document.getElementById('balance').value,
-                interestRate: document.getElementById('interest').value,
-                minPayment: document.getElementById('minPayment').value,
-                extraPayment: document.getElementById('extraPayment').value || '0',
+                balance: parseFloat(document.getElementById('balance').value),
+                interestRate: parseFloat(document.getElementById('interest').value),
+                minPayment: parseFloat(document.getElementById('minPayment').value),
+                extraPayment: parseFloat(document.getElementById('extraPayment').value || 0),
             };
 
-            // Basic validation check
-            if (parseFloat(newDebt.balance) <= 0 || parseFloat(newDebt.interestRate) < 0 || parseFloat(newDebt.minPayment) <= 0) {
-                console.error("Please enter valid positive numbers for Balance and Minimum Payment. Interest Rate can be 0 or positive.");
+            if (newDebt.balance <= 0 || newDebt.minPayment <= 0) {
+                console.error("Please enter valid positive numbers for Balance and Minimum Payment.");
                 return;
             }
 
-            try {
-                await addDoc(getCollectionRef(), newDebt);
-                e.target.reset(); // Clear form after successful submission
-                document.getElementById('extraPayment').value = 0; // Resetting value
-            } catch (error) {
-                console.error("Error adding debt:", error);
-                authStatusElement.textContent = 'Failed to save debt. Check console.';
-            }
+            // Simple local add logic
+            debts.push(newDebt);
+            saveDebts();
+            renderDebtList();
+            calculateAndDisplayResults();
+
+            e.target.reset(); // Clear form after successful submission
+            document.getElementById('extraPayment').value = 0; // Resetting value
         });
 
         document.getElementById('snowball-btn').addEventListener('click', () => {
@@ -514,8 +367,8 @@
             calculateAndDisplayResults('avalanche');
         });
         
-        // Initial setup
-        initFirebase();
+        // Initial data load from browser storage
+        loadDebts();
     </script>
 </body>
 </html>
